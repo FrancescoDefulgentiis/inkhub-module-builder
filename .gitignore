@@ -1,5 +1,7 @@
 # User settings (contains the API key you paste in the setup page)
-config.json
+# Anchored with a leading slash so it only ignores the project-root file,
+# not reference examples or generated modules that also ship a config.json.
+/config.json
 
 # Modules produced by the AI, staged before you drag them into inkHub
 workspace/*
