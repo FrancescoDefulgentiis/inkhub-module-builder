@@ -1,0 +1,10 @@
+Flask>=2.0
+Pillow>=10.0
+requests>=2.31
+
+# LLM provider SDKs — imported lazily so you only need the one you use.
+# Uncomment the SDK for the provider you plan to use, or install manually:
+#
+#   pip install openai
+#   pip install anthropic
+#   pip install google-generativeai

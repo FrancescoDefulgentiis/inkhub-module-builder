@@ -1,0 +1,13 @@
+# User settings (contains the API key you paste in the setup page)
+config.json
+
+# Modules produced by the AI, staged before you drag them into inkHub
+workspace/*
+!workspace/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/

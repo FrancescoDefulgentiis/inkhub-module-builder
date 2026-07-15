@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>InkHub Module Builder</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topbar">
+    <h1>
+      <span class="brand-mark">◧</span>
+      InkHub Module Builder
+    </h1>
+    <div class="topbar-actions">
+      <button id="btn-settings" type="button" class="ghost">⚙ Settings</button>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- Setup panel — shown when no provider configured yet -->
+    <section id="setup-panel" class="card{% if configured %} hidden{% endif %}">
+      <h2>First-run setup</h2>
+      <p class="lede">
+        Pick which AI you want to use. Your key is stored locally in
+        <code>inkhub-module-builder/config.json</code> and never sent anywhere
+        except to the provider you picked.
+      </p>
+      <form id="setup-form" class="stack">
+        <label>
+          <span class="label-text">AI provider</span>
+          <select name="provider" required>
+            <option value="">— select one —</option>
+            <option value="openai">OpenAI (GPT)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="gemini">Google (Gemini)</option>
+          </select>
+        </label>
+        <label>
+          <span class="label-text">API key</span>
+          <input name="api_key" type="password" autocomplete="off" required
+                 placeholder="paste the key from your provider dashboard">
+        </label>
+        <label>
+          <span class="label-text">Model <small>(default is prefilled)</small></span>
+          <input name="model" type="text" placeholder="e.g. gpt-4o-mini">
+        </label>
+        <label>
+          <span class="label-text">
+            Where should finished modules land?
+            <small>Default is the sibling <code>inkHub/src/modules</code>.</small>
+          </span>
+          <input name="target_modules_dir" type="text">
+        </label>
+        <div class="row">
+          <label class="half">
+            <span class="label-text">Panel width (px)</span>
+            <input name="panel_width" type="number" min="100" value="800">
+          </label>
+          <label class="half">
+            <span class="label-text">Panel height (px)</span>
+            <input name="panel_height" type="number" min="100" value="480">
+          </label>
+        </div>
+        <button type="submit" class="primary">Save &amp; start building</button>
+      </form>
+    </section>
+
+    <!-- Wizard panel — shown when configured -->
+    <section id="wizard-panel" class="card{% if not configured %} hidden{% endif %}">
+      <div id="wizard-steps"></div>
+      <div class="wizard-nav">
+        <button id="btn-back" type="button" class="ghost" disabled>← Back</button>
+        <div class="wizard-progress" id="wizard-progress"></div>
+        <button id="btn-next" type="button" class="primary">Next →</button>
+      </div>
+    </section>
+
+    <!-- Building panel — shown during generation -->
+    <section id="building-panel" class="card hidden">
+      <h2>Building your module…</h2>
+      <div class="spinner"></div>
+      <p id="building-status">Contacting the AI…</p>
+      <ol id="building-log" class="build-log"></ol>
+    </section>
+
+    <!-- Result panel -->
+    <section id="result-panel" class="card hidden">
+      <h2 id="result-title">Your module is ready</h2>
+      <div id="result-preview"></div>
+      <div id="result-actions"></div>
+      <details>
+        <summary>Show generation log</summary>
+        <ol id="result-log" class="build-log"></ol>
+      </details>
+    </section>
+
+    <!-- Error banner -->
+    <section id="error-panel" class="card danger hidden">
+      <h2>Something went wrong</h2>
+      <pre id="error-message"></pre>
+      <button id="error-dismiss" type="button" class="ghost">Dismiss</button>
+    </section>
+  </main>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
