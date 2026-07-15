@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import base64
 import importlib
+import importlib.util
 import io
 import json
 import sys
