@@ -1,9 +1,27 @@
 // InkHub Module Builder frontend — vanilla JS, no build step.
+//
+// Two main views:
+//   * "providers"  — user picks which AI APIs to use (add + remove providers).
+//   * "dashboard"  — active provider + model dropdowns, plus provider management
+//                    and the entry point into the build wizard.
+// The wizard/build/result flow is unchanged.
 
 const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+const VIEWS = [
+  "loading-panel",
+  "providers-panel",
+  "dashboard-panel",
+  "wizard-panel",
+  "building-panel",
+  "result-panel",
+];
 
 const state = {
+  view: "loading",
+  settings: null,          // /api/settings response
+  providers: null,         // /api/providers response
+  modelsCache: {},         // { providerName: { models: [...], warning: str|null } }
   steps: [],
   currentStep: 0,
   answers: {},
@@ -13,26 +31,46 @@ const state = {
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
-document.addEventListener("DOMContentLoaded", async () => {
-  $("#btn-settings").addEventListener("click", openSettingsModal);
-  $("#setup-form").addEventListener("submit", submitSetup);
-  $("#btn-back").addEventListener("click", () => goToStep(state.currentStep - 1));
-  $("#btn-next").addEventListener("click", onNext);
+function boot() {
+  $("#btn-dashboard").addEventListener("click", () => showView("dashboard"));
   $("#error-dismiss").addEventListener("click", () => $("#error-panel").classList.add("hidden"));
 
-  try {
-    const { steps } = await api("/api/wizard/steps");
-    state.steps = steps;
-  } catch (err) {
-    showError("Failed to load wizard: " + err.message);
-    return;
-  }
+  $("#btn-back").addEventListener("click", () => goToStep(state.currentStep - 1));
+  $("#btn-next").addEventListener("click", onNext);
 
-  const settings = await api("/api/settings");
-  if (settings.configured) {
-    renderWizard();
-  }
-});
+  $("#add-provider-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    handleAddProvider(e.currentTarget, /* fromDashboard */ false);
+  });
+  $("#dashboard-add-provider-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    handleAddProvider(e.currentTarget, /* fromDashboard */ true);
+  });
+  $("#providers-continue").addEventListener("click", () => showView("dashboard"));
+  $("#dashboard-start-wizard").addEventListener("click", startWizard);
+  $("#dashboard-target-form").addEventListener("submit", handleTargetSave);
+
+  $("#active-provider-select").addEventListener("change", handleActiveProviderChange);
+  $("#active-model-select").addEventListener("change", handleActiveModelChange);
+
+  Promise.all([refreshSettings(), refreshProviders()])
+    .then(() => {
+      if (state.providers.configured || (state.providers.providers || []).length > 0) {
+        // Any configured provider (even without an active model) drops the
+        // user straight into the dashboard so they can pick a model.
+        showView("dashboard");
+      } else {
+        showView("providers");
+      }
+    })
+    .catch((err) => showError("Failed to load app: " + err.message));
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", boot);
+} else {
+  boot();
+}
 
 // ---------------------------------------------------------------------------
 // API helper
@@ -54,17 +92,405 @@ async function api(path, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Setup form
+// View routing
 // ---------------------------------------------------------------------------
-async function submitSetup(e) {
+function showView(name) {
+  state.view = name;
+  const panelId = name.endsWith("-panel") ? name : `${name}-panel`;
+  VIEWS.forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.toggle("hidden", id !== panelId);
+  });
+
+  const dashBtn = $("#btn-dashboard");
+  const showBtn = state.providers?.configured
+    && !["dashboard-panel", "loading-panel", "providers-panel"].includes(panelId);
+  dashBtn.classList.toggle("hidden", !showBtn);
+
+  if (panelId === "providers-panel") renderProvidersView();
+  if (panelId === "dashboard-panel") renderDashboardView();
+  if (panelId === "wizard-panel") renderStep();
+}
+
+// ---------------------------------------------------------------------------
+// Data loaders
+// ---------------------------------------------------------------------------
+async function refreshSettings() {
+  state.settings = await api("/api/settings");
+}
+
+async function refreshProviders() {
+  state.providers = await api("/api/providers");
+}
+
+async function loadModelsForProvider(name, { force = false } = {}) {
+  if (!name) return { models: [], warning: null };
+  if (!force && state.modelsCache[name]) return state.modelsCache[name];
+  try {
+    const data = await api(`/api/providers/${encodeURIComponent(name)}/models`);
+    state.modelsCache[name] = {
+      models: data.models || [],
+      warning: data.warning || null,
+      defaultModel: data.default_model || "",
+    };
+  } catch (err) {
+    state.modelsCache[name] = {
+      models: [],
+      warning: err.message,
+      defaultModel: "",
+    };
+  }
+  return state.modelsCache[name];
+}
+
+// ---------------------------------------------------------------------------
+// View 1: Providers setup
+// ---------------------------------------------------------------------------
+function renderProvidersView() {
+  renderProvidersList($("#providers-list"), {
+    configuredProviders: state.providers.providers,
+    onRemove: (name) => removeProviderAndRefresh(name),
+    emptyText: "No providers added yet. Add your first one below.",
+  });
+
+  populateProviderSelect(
+    $("#add-provider-form select[name='provider']"),
+    unconfiguredProviders(),
+  );
+  updateApiKeyHint(
+    $("#add-provider-form"),
+    $("#add-provider-key-hint"),
+  );
+
+  const canContinue = (state.providers.providers || []).length > 0;
+  const btn = $("#providers-continue");
+  btn.disabled = !canContinue;
+  btn.classList.toggle("primary", canContinue);
+  btn.classList.toggle("ghost", !canContinue);
+}
+
+// ---------------------------------------------------------------------------
+// View 2: Dashboard
+// ---------------------------------------------------------------------------
+async function renderDashboardView() {
+  // Providers list + add-form (mirrors the providers view but embedded).
+  renderProvidersList($("#dashboard-providers-list"), {
+    configuredProviders: state.providers.providers,
+    onRemove: (name) => removeProviderAndRefresh(name),
+    emptyText: "No providers configured. Add one below to get started.",
+    showActiveBadge: true,
+  });
+  populateProviderSelect(
+    $("#dashboard-add-provider-form select[name='provider']"),
+    unconfiguredProviders(),
+  );
+  updateApiKeyHint(
+    $("#dashboard-add-provider-form"),
+    $("#dashboard-add-key-hint"),
+  );
+
+  // Active-provider dropdown lists only the *configured* providers.
+  const activeSelect = $("#active-provider-select");
+  const configured = state.providers.providers || [];
+  activeSelect.innerHTML = "";
+  if (configured.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "— add a provider first —";
+    activeSelect.appendChild(opt);
+    activeSelect.disabled = true;
+  } else {
+    activeSelect.disabled = false;
+    configured.forEach((p) => {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.label;
+      if (p.name === state.providers.active_provider) opt.selected = true;
+      activeSelect.appendChild(opt);
+    });
+  }
+
+  // Target folder + panel info.
+  const targetInput = $("#dashboard-target-form input[name='target_modules_dir']");
+  if (targetInput) targetInput.value = state.settings.target_modules_dir || "";
+  const panelInfo = $("#dashboard-panel-info");
+  if (panelInfo) {
+    const size = `${state.settings.panel_width}x${state.settings.panel_height}`;
+    const source = panelSizeSourceLabel(state.settings.panel_size_source);
+    const driver = state.settings.inkhub_panel_driver
+      ? ` (driver: ${state.settings.inkhub_panel_driver})`
+      : "";
+    panelInfo.textContent = `Panel size: ${size} (${source})${driver}.`;
+  }
+
+  // Populate the model dropdown for whichever provider is active.
+  const activeProvider = state.providers.active_provider || (configured[0] && configured[0].name);
+  await populateActiveModelSelect(activeProvider);
+
+  updateStartWizardButton();
+}
+
+async function populateActiveModelSelect(providerName) {
+  const modelSelect = $("#active-model-select");
+  const loading = $("#active-model-loading");
+  const warning = $("#active-model-warning");
+  const status = $("#active-model-status");
+
+  modelSelect.innerHTML = "";
+  warning.classList.add("hidden");
+  warning.textContent = "";
+
+  if (!providerName) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "— pick a provider first —";
+    modelSelect.appendChild(opt);
+    modelSelect.disabled = true;
+    status.textContent = "";
+    return;
+  }
+
+  modelSelect.disabled = true;
+  loading.classList.remove("hidden");
+  const { models, warning: warn, defaultModel } = await loadModelsForProvider(providerName);
+  loading.classList.add("hidden");
+
+  if (!models || models.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "— no models available —";
+    modelSelect.appendChild(opt);
+    modelSelect.disabled = true;
+  } else {
+    modelSelect.disabled = false;
+    const activeModel = state.providers.active_provider === providerName
+      ? state.providers.active_model
+      : "";
+    const preferred = activeModel || defaultModel || models[0];
+    models.forEach((m) => {
+      const opt = document.createElement("option");
+      opt.value = m;
+      opt.textContent = m;
+      if (m === preferred) opt.selected = true;
+      modelSelect.appendChild(opt);
+    });
+    // If active_model isn't in the returned list (edge case), keep it selectable.
+    if (activeModel && !models.includes(activeModel)) {
+      const opt = document.createElement("option");
+      opt.value = activeModel;
+      opt.textContent = `${activeModel} (custom)`;
+      opt.selected = true;
+      modelSelect.appendChild(opt);
+    }
+  }
+
+  if (warn) {
+    warning.textContent = `Live model list unavailable (${warn}). Showing fallback options.`;
+    warning.classList.remove("hidden");
+  }
+
+  const currentModel = modelSelect.value;
+  status.textContent = currentModel
+    ? `Using ${providerLabelFor(providerName)} · ${currentModel}`
+    : "";
+}
+
+async function handleActiveProviderChange(e) {
+  const provider = e.currentTarget.value;
+  if (!provider) return;
+  await populateActiveModelSelect(provider);
+  const model = $("#active-model-select").value;
+  await persistActive(provider, model);
+}
+
+async function handleActiveModelChange(e) {
+  const model = e.currentTarget.value;
+  const provider = $("#active-provider-select").value;
+  if (!provider || !model) return;
+  await persistActive(provider, model);
+}
+
+async function persistActive(provider, model) {
+  try {
+    const result = await api("/api/active", {
+      method: "POST",
+      body: JSON.stringify({ provider, model }),
+    });
+    state.providers.active_provider = result.active_provider;
+    state.providers.active_model = result.active_model;
+    state.providers.configured = result.configured;
+    $("#active-model-status").textContent =
+      `Using ${providerLabelFor(provider)} · ${model}`;
+    updateStartWizardButton();
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+async function handleTargetSave(e) {
   e.preventDefault();
-  const form = new FormData(e.currentTarget);
-  const body = Object.fromEntries(form.entries());
+  const body = Object.fromEntries(new FormData(e.currentTarget).entries());
   try {
     await api("/api/settings", { method: "POST", body: JSON.stringify(body) });
-    $("#setup-panel").classList.add("hidden");
-    $("#wizard-panel").classList.remove("hidden");
-    renderWizard();
+    await refreshSettings();
+    renderDashboardView();
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+function updateStartWizardButton() {
+  const btn = $("#dashboard-start-wizard");
+  btn.disabled = !state.providers.configured;
+}
+
+// ---------------------------------------------------------------------------
+// Shared provider helpers
+// ---------------------------------------------------------------------------
+function renderProvidersList(container, opts) {
+  const { configuredProviders, onRemove, emptyText, showActiveBadge } = opts;
+  container.innerHTML = "";
+  if (!configuredProviders || configuredProviders.length === 0) {
+    const p = document.createElement("p");
+    p.className = "help";
+    p.textContent = emptyText || "No providers configured yet.";
+    container.appendChild(p);
+    return;
+  }
+  configuredProviders.forEach((provider) => {
+    const item = document.createElement("div");
+    item.className = "provider-item";
+
+    const left = document.createElement("div");
+    left.className = "provider-info";
+    const title = document.createElement("div");
+    title.className = "provider-name";
+    title.textContent = provider.label;
+    if (showActiveBadge && state.providers.active_provider === provider.name) {
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "active";
+      title.appendChild(badge);
+    }
+    const sub = document.createElement("div");
+    sub.className = "provider-sub";
+    if (provider.requires_api_key) {
+      sub.textContent = provider.api_key_preview
+        ? `Key: ${provider.api_key_preview}`
+        : "No API key stored";
+    } else {
+      sub.textContent = provider.api_key_preview
+        ? `Key: ${provider.api_key_preview}`
+        : "Using public (no key required)";
+    }
+    left.append(title, sub);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "ghost";
+    removeBtn.textContent = "Remove";
+    removeBtn.addEventListener("click", () => {
+      if (!confirm(`Remove ${provider.label}?`)) return;
+      onRemove(provider.name);
+    });
+
+    item.append(left, removeBtn);
+    container.appendChild(item);
+  });
+}
+
+function populateProviderSelect(selectEl, providers) {
+  if (!selectEl) return;
+  const currentValue = selectEl.value;
+  selectEl.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = providers.length === 0
+    ? "— all providers added —"
+    : "— select one —";
+  selectEl.appendChild(placeholder);
+  providers.forEach((p) => {
+    const opt = document.createElement("option");
+    opt.value = p.name;
+    opt.textContent = p.label;
+    selectEl.appendChild(opt);
+  });
+  selectEl.disabled = providers.length === 0;
+  if (currentValue && providers.some((p) => p.name === currentValue)) {
+    selectEl.value = currentValue;
+  }
+  // Re-fire change to keep the api-key hint in sync.
+  selectEl.dispatchEvent(new Event("change"));
+}
+
+function unconfiguredProviders() {
+  const supported = state.providers.supported_providers || [];
+  return supported.filter((p) => !p.configured);
+}
+
+function updateApiKeyHint(formEl, hintEl) {
+  if (!formEl || !hintEl) return;
+  const providerSelect = formEl.querySelector("select[name='provider']");
+  const apiKeyInput = formEl.querySelector("input[name='api_key']");
+  if (!providerSelect || !apiKeyInput) return;
+
+  const apply = () => {
+    const providerName = providerSelect.value;
+    const providerMeta = (state.providers.supported_providers || [])
+      .find((p) => p.name === providerName);
+    if (!providerName || !providerMeta) {
+      apiKeyInput.required = false;
+      apiKeyInput.placeholder = "paste the key from your provider dashboard";
+      hintEl.textContent = "(optional for OpenCode)";
+      return;
+    }
+    apiKeyInput.required = providerMeta.requires_api_key;
+    apiKeyInput.placeholder = providerMeta.requires_api_key
+      ? "paste the key from your provider dashboard"
+      : "optional — leave blank for public access";
+    hintEl.textContent = providerMeta.requires_api_key
+      ? "(required)"
+      : "(optional)";
+  };
+  providerSelect.onchange = apply;
+  apply();
+}
+
+async function handleAddProvider(formEl, fromDashboard) {
+  const body = Object.fromEntries(new FormData(formEl).entries());
+  const provider = String(body.provider || "").trim().toLowerCase();
+  if (!provider) {
+    showError("Pick a provider first.");
+    return;
+  }
+  const apiKey = String(body.api_key || "").trim();
+  try {
+    await api("/api/providers", {
+      method: "POST",
+      body: JSON.stringify({ provider, api_key: apiKey }),
+    });
+    // Drop cached models — the key may have changed.
+    delete state.modelsCache[provider];
+    formEl.reset();
+    await refreshProviders();
+    if (fromDashboard) {
+      renderDashboardView();
+    } else {
+      renderProvidersView();
+    }
+  } catch (err) {
+    showError(err.message);
+  }
+}
+
+async function removeProviderAndRefresh(name) {
+  try {
+    await api(`/api/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+    delete state.modelsCache[name];
+    await refreshProviders();
+    if (state.view === "dashboard") renderDashboardView();
+    else renderProvidersView();
   } catch (err) {
     showError(err.message);
   }
@@ -73,14 +499,24 @@ async function submitSetup(e) {
 // ---------------------------------------------------------------------------
 // Wizard
 // ---------------------------------------------------------------------------
-function renderWizard() {
+async function startWizard() {
+  if (!state.steps.length) {
+    try {
+      const { steps } = await api("/api/wizard/steps");
+      state.steps = steps;
+    } catch (err) {
+      showError("Failed to load wizard: " + err.message);
+      return;
+    }
+  }
   state.currentStep = 0;
   state.answers = {};
-  renderStep();
+  showView("wizard");
 }
 
 function renderStep() {
   const step = state.steps[state.currentStep];
+  if (!step) return;
   const isLast = state.currentStep === state.steps.length - 1;
   $("#wizard-progress").textContent =
     `Step ${state.currentStep + 1} of ${state.steps.length}`;
@@ -146,7 +582,6 @@ function renderStep() {
 
   container.appendChild(wrap);
 
-  // Autofocus for text/textarea
   setTimeout(() => {
     const el = container.querySelector('input[type="text"], textarea');
     if (el) el.focus();
@@ -191,10 +626,8 @@ function goToStep(index) {
 // Build flow
 // ---------------------------------------------------------------------------
 async function startBuild() {
-  $("#wizard-panel").classList.add("hidden");
-  $("#result-panel").classList.add("hidden");
+  showView("building");
   $("#error-panel").classList.add("hidden");
-  $("#building-panel").classList.remove("hidden");
   $("#building-status").textContent = "Contacting the AI — this may take 20–60 seconds…";
   $("#building-log").innerHTML = "";
   appendLog("#building-log", "Sending your answers to the AI…");
@@ -210,17 +643,14 @@ async function startBuild() {
         a.error ? `Attempt ${a.attempt}: ${a.error.split("\n")[0]}` : `Attempt ${a.attempt}: OK`,
         a.error ? "err" : "ok");
     });
-    $("#building-panel").classList.add("hidden");
     showResult(result);
   } catch (err) {
-    $("#building-panel").classList.add("hidden");
-    $("#wizard-panel").classList.remove("hidden");
+    showView("wizard");
     showError(err.message);
   }
 }
 
 function showResult(result) {
-  const panel = $("#result-panel");
   const title = $("#result-title");
   const preview = $("#result-preview");
   const actions = $("#result-actions");
@@ -246,10 +676,7 @@ function showResult(result) {
     const retry = document.createElement("button");
     retry.className = "primary";
     retry.textContent = "Try again with a different brief";
-    retry.addEventListener("click", () => {
-      $("#result-panel").classList.add("hidden");
-      $("#wizard-panel").classList.remove("hidden");
-    });
+    retry.addEventListener("click", () => showView("wizard"));
     actions.appendChild(retry);
   } else {
     title.textContent = `✓ "${result.name || result.slug}" is ready`;
@@ -269,12 +696,14 @@ function showResult(result) {
     const again = document.createElement("button");
     again.className = "ghost";
     again.textContent = "Build another module";
-    again.addEventListener("click", () => {
-      $("#result-panel").classList.add("hidden");
-      $("#wizard-panel").classList.remove("hidden");
-      renderWizard();
-    });
+    again.addEventListener("click", () => startWizard());
     actions.appendChild(again);
+
+    const home = document.createElement("button");
+    home.className = "ghost";
+    home.textContent = "Back to dashboard";
+    home.addEventListener("click", () => showView("dashboard"));
+    actions.appendChild(home);
 
     const hint = document.createElement("div");
     hint.className = "path-hint";
@@ -282,7 +711,7 @@ function showResult(result) {
     actions.appendChild(hint);
   }
 
-  panel.classList.remove("hidden");
+  showView("result");
 }
 
 async function installIntoInkhub(slug) {
@@ -312,70 +741,14 @@ function showError(message) {
   $("#error-panel").classList.remove("hidden");
 }
 
-// ---------------------------------------------------------------------------
-// Settings modal
-// ---------------------------------------------------------------------------
-async function openSettingsModal() {
-  const s = await api("/api/settings");
-  const backdrop = document.createElement("div");
-  backdrop.className = "modal-backdrop";
-  backdrop.addEventListener("click", (e) => {
-    if (e.target === backdrop) backdrop.remove();
-  });
+function providerLabelFor(name) {
+  const supported = (state.providers?.supported_providers) || [];
+  const hit = supported.find((p) => p.name === name);
+  return hit ? hit.label : name;
+}
 
-  const modal = document.createElement("div");
-  modal.className = "modal";
-  modal.innerHTML = `
-    <h2>Settings</h2>
-    <form id="modal-settings-form" class="stack">
-      <label>
-        <span class="label-text">AI provider</span>
-        <select name="provider">
-          ${s.supported_providers.map(p => `<option value="${p}"${s.provider === p ? " selected" : ""}>${p}</option>`).join("")}
-        </select>
-      </label>
-      <label>
-        <span class="label-text">API key <small>${s.api_key_preview ? "current: " + s.api_key_preview : ""}</small></span>
-        <input type="password" name="api_key" autocomplete="off" placeholder="leave blank to keep current">
-      </label>
-      <label>
-        <span class="label-text">Model</span>
-        <input type="text" name="model" value="${s.model || ""}">
-      </label>
-      <label>
-        <span class="label-text">Target modules folder</span>
-        <input type="text" name="target_modules_dir" value="${s.target_modules_dir || ""}">
-      </label>
-      <div class="row">
-        <label class="half">
-          <span class="label-text">Panel width</span>
-          <input type="number" name="panel_width" min="100" value="${s.panel_width || 800}">
-        </label>
-        <label class="half">
-          <span class="label-text">Panel height</span>
-          <input type="number" name="panel_height" min="100" value="${s.panel_height || 480}">
-        </label>
-      </div>
-      <div class="wizard-nav">
-        <button type="button" class="ghost" id="cancel-settings">Cancel</button>
-        <button type="submit" class="primary">Save</button>
-      </div>
-    </form>
-  `;
-  backdrop.appendChild(modal);
-  document.body.appendChild(backdrop);
-
-  modal.querySelector("#cancel-settings").addEventListener("click", () => backdrop.remove());
-  modal.querySelector("#modal-settings-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const body = Object.fromEntries(new FormData(e.currentTarget).entries());
-    // Drop empty api_key so we don't wipe the current one.
-    if (!body.api_key) delete body.api_key;
-    try {
-      await api("/api/settings", { method: "POST", body: JSON.stringify(body) });
-      backdrop.remove();
-    } catch (err) {
-      showError(err.message);
-    }
-  });
+function panelSizeSourceLabel(source) {
+  if (source === "inkhub_panel_driver") return "read from InkHub config";
+  if (source === "unknown_panel_driver_default") return "unknown panel driver, using fallback";
+  return "using fallback";
 }

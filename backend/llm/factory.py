@@ -17,10 +17,12 @@ def _install_providers() -> None:
     from .openai_client import OpenAIClient
     from .anthropic_client import AnthropicClient
     from .gemini_client import GeminiClient
+    from .opencode_client import OpenCodeClient
 
     _register("openai", OpenAIClient)
     _register("anthropic", AnthropicClient)
     _register("gemini", GeminiClient)
+    _register("opencode", OpenCodeClient)
 
 
 _install_providers()

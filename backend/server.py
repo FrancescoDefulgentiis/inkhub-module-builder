@@ -16,14 +16,22 @@ from .generator import (
     parse_llm_output,
     write_module,
 )
-from .llm import LLMError, LLMMessage, get_client
+from .llm import LLMError, LLMMessage, get_client, list_models
 from .settings import (
     DEFAULT_MODELS,
+    PROVIDER_LABELS,
     SUPPORTED_PROVIDERS,
+    detect_inkhub,
     is_configured,
     load_settings,
+    provider_label,
+    provider_requires_api_key,
+    remove_provider,
+    resolve_panel_size,
+    set_active,
     target_modules_dir,
     update_settings,
+    upsert_provider,
     workspace_dir,
 )
 from .validator import validate_module
@@ -74,47 +82,36 @@ def _register_routes(app: Flask) -> None:
         )
 
     # ------------------------------------------------------------------ #
-    # Settings                                                            #
+    # Settings (target folder + panel size + read-only status)            #
     # ------------------------------------------------------------------ #
     @app.get("/api/settings")
     def get_settings() -> Any:
         s = load_settings()
-        # Never leak the API key in full — send back a redacted preview
-        # so the UI can show "sk-abc…xyz" without exposing the whole thing.
-        preview = ""
-        if s.get("api_key"):
-            k = str(s["api_key"])
-            preview = f"{k[:4]}…{k[-4:]}" if len(k) > 8 else "•" * len(k)
+        inkhub = detect_inkhub(s)
         return jsonify({
-            "provider": s.get("provider"),
-            "model": s.get("model"),
-            "api_key_preview": preview,
-            "target_modules_dir": s.get("target_modules_dir"),
-            "panel_width": s.get("panel_width"),
-            "panel_height": s.get("panel_height"),
-            "supported_providers": list(SUPPORTED_PROVIDERS),
-            "default_models": DEFAULT_MODELS,
+            "target_modules_dir": str(target_modules_dir(s)),
+            "panel_width": inkhub["panel_width"],
+            "panel_height": inkhub["panel_height"],
+            "panel_size_source": inkhub["panel_size_source"],
+            "inkhub_repo_root": inkhub["repo_root"],
+            "inkhub_config_path": inkhub["config_path"],
+            "inkhub_panel_driver": inkhub["panel_driver"],
+            "supported_providers": [
+                {
+                    "name": p,
+                    "label": provider_label(p),
+                    "requires_api_key": provider_requires_api_key(p),
+                    "default_model": DEFAULT_MODELS.get(p, ""),
+                }
+                for p in SUPPORTED_PROVIDERS
+            ],
             "configured": is_configured(s),
         })
 
     @app.post("/api/settings")
     def post_settings() -> Any:
+        """Update non-provider settings (target folder, panel dimensions)."""
         body = request.get_json(silent=True) or {}
-        provider = body.get("provider")
-        if provider is not None:
-            provider = str(provider).lower().strip()
-            if provider not in SUPPORTED_PROVIDERS:
-                return jsonify({"error": f"Unsupported provider {provider!r}"}), 400
-
-        api_key = body.get("api_key")
-        if api_key is not None:
-            api_key = str(api_key).strip()
-
-        model = body.get("model")
-        if model is not None:
-            model = str(model).strip()
-            if not model and provider:
-                model = DEFAULT_MODELS.get(provider, "")
 
         target = body.get("target_modules_dir")
         if target is not None:
@@ -128,18 +125,7 @@ def _register_routes(app: Flask) -> None:
         except (TypeError, ValueError):
             return jsonify({"error": "panel_width/panel_height must be integers"}), 400
 
-        # Only forward keys the user actually sent (skip None), except for
-        # empty api_key which we treat as "no change" to avoid wiping it by
-        # accident from the settings dialog.
         changes: dict[str, Any] = {}
-        if provider:
-            changes["provider"] = provider
-            if not model:
-                changes["model"] = DEFAULT_MODELS.get(provider, "")
-        if api_key:
-            changes["api_key"] = api_key
-        if model:
-            changes["model"] = model
         if target:
             changes["target_modules_dir"] = target
         if width:
@@ -149,6 +135,117 @@ def _register_routes(app: Flask) -> None:
 
         settings = update_settings(**changes)
         return jsonify({"ok": True, "configured": is_configured(settings)})
+
+    # ------------------------------------------------------------------ #
+    # Providers (multi-provider configuration)                            #
+    # ------------------------------------------------------------------ #
+    @app.get("/api/providers")
+    def providers_list() -> Any:
+        s = load_settings()
+        providers = s.get("providers") or {}
+        configured = []
+        for name in SUPPORTED_PROVIDERS:
+            entry = providers.get(name)
+            if entry is None:
+                continue
+            key = str(entry.get("api_key") or "")
+            if len(key) > 8:
+                preview = f"{key[:4]}…{key[-4:]}"
+            elif key:
+                preview = "•" * len(key)
+            else:
+                preview = ""
+            configured.append({
+                "name": name,
+                "label": provider_label(name),
+                "requires_api_key": provider_requires_api_key(name),
+                "has_api_key": bool(key),
+                "api_key_preview": preview,
+            })
+        return jsonify({
+            "providers": configured,
+            "supported_providers": [
+                {
+                    "name": p,
+                    "label": provider_label(p),
+                    "requires_api_key": provider_requires_api_key(p),
+                    "default_model": DEFAULT_MODELS.get(p, ""),
+                    "configured": p in providers,
+                }
+                for p in SUPPORTED_PROVIDERS
+            ],
+            "active_provider": s.get("active_provider"),
+            "active_model": s.get("active_model"),
+            "configured": is_configured(s),
+        })
+
+    @app.post("/api/providers")
+    def providers_upsert() -> Any:
+        body = request.get_json(silent=True) or {}
+        name = str(body.get("provider") or "").strip().lower()
+        if name not in SUPPORTED_PROVIDERS:
+            return jsonify({"error": f"Unsupported provider {name!r}"}), 400
+        api_key = str(body.get("api_key") or "").strip()
+        if provider_requires_api_key(name) and not api_key:
+            return jsonify({"error": f"{provider_label(name)} requires an API key"}), 400
+        try:
+            settings = upsert_provider(name, api_key)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({
+            "ok": True,
+            "provider": name,
+            "active_provider": settings.get("active_provider"),
+            "active_model": settings.get("active_model"),
+            "configured": is_configured(settings),
+        })
+
+    @app.delete("/api/providers/<name>")
+    def providers_remove(name: str) -> Any:
+        settings = remove_provider(name)
+        return jsonify({
+            "ok": True,
+            "active_provider": settings.get("active_provider"),
+            "active_model": settings.get("active_model"),
+            "configured": is_configured(settings),
+        })
+
+    @app.get("/api/providers/<name>/models")
+    def providers_models(name: str) -> Any:
+        name = (name or "").strip().lower()
+        if name not in SUPPORTED_PROVIDERS:
+            return jsonify({"error": f"Unsupported provider {name!r}"}), 400
+        s = load_settings()
+        entry = (s.get("providers") or {}).get(name)
+        if entry is None:
+            return jsonify({"error": f"Provider {name!r} is not configured"}), 404
+        api_key = str(entry.get("api_key") or "")
+        models, warning = list_models(name, api_key)
+        return jsonify({
+            "provider": name,
+            "models": models,
+            "default_model": DEFAULT_MODELS.get(name, ""),
+            "warning": warning,
+        })
+
+    # ------------------------------------------------------------------ #
+    # Active provider + model                                             #
+    # ------------------------------------------------------------------ #
+    @app.post("/api/active")
+    def providers_set_active() -> Any:
+        body = request.get_json(silent=True) or {}
+        provider = body.get("provider")
+        model = body.get("model")
+        try:
+            settings = set_active(provider, model)
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        return jsonify({
+            "ok": True,
+            "active_provider": settings.get("active_provider"),
+            "active_model": settings.get("active_model"),
+            "configured": is_configured(settings),
+        })
 
     # ------------------------------------------------------------------ #
     # Wizard steps                                                        #
@@ -176,7 +273,7 @@ def _register_routes(app: Flask) -> None:
         except LLMError as exc:
             return jsonify({"error": str(exc)}), 400
 
-        panel_size = (int(settings["panel_width"]), int(settings["panel_height"]))
+        panel_size = resolve_panel_size(settings)
         system_prompt = build_system_prompt()
         user_prompt = build_user_prompt(cleaned, panel_size)
         conversation: list[LLMMessage] = [

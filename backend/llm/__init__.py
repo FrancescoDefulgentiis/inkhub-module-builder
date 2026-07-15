@@ -10,3 +10,4 @@ from __future__ import annotations
 
 from .base import LLMClient, LLMError, LLMMessage, LLMResponse  # noqa: F401
 from .factory import get_client  # noqa: F401
+from .models import FALLBACK_MODELS, list_models  # noqa: F401

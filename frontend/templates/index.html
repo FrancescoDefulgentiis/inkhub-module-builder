@@ -13,61 +13,125 @@
       InkHub Module Builder
     </h1>
     <div class="topbar-actions">
-      <button id="btn-settings" type="button" class="ghost">⚙ Settings</button>
+      <button id="btn-dashboard" type="button" class="ghost hidden">⚙ Dashboard</button>
     </div>
   </header>
 
   <main id="app">
-    <!-- Setup panel — shown when no provider configured yet -->
-    <section id="setup-panel" class="card{% if configured %} hidden{% endif %}">
-      <h2>First-run setup</h2>
+    <!-- Loading shell: shown until the first /api/providers call resolves. -->
+    <section id="loading-panel" class="card">
+      <div class="spinner"></div>
+      <p class="lede">Loading…</p>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- View 1: Providers setup — pick which APIs to use             -->
+    <!-- ============================================================ -->
+    <section id="providers-panel" class="card hidden">
+      <h2>Which AI providers do you want to use?</h2>
       <p class="lede">
-        Pick which AI you want to use. Your key is stored locally in
-        <code>inkhub-module-builder/config.json</code> and never sent anywhere
-        except to the provider you picked.
+        Add one or more providers. Your keys are stored locally in
+        <code>inkhub-module-builder/config.json</code> and are only sent to the
+        provider you use. You can add or remove providers later from the dashboard.
       </p>
-      <form id="setup-form" class="stack">
-        <label>
-          <span class="label-text">AI provider</span>
-          <select name="provider" required>
-            <option value="">— select one —</option>
-            <option value="openai">OpenAI (GPT)</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="gemini">Google (Gemini)</option>
-          </select>
-        </label>
-        <label>
-          <span class="label-text">API key</span>
-          <input name="api_key" type="password" autocomplete="off" required
-                 placeholder="paste the key from your provider dashboard">
-        </label>
-        <label>
-          <span class="label-text">Model <small>(default is prefilled)</small></span>
-          <input name="model" type="text" placeholder="e.g. gpt-4o-mini">
-        </label>
-        <label>
-          <span class="label-text">
-            Where should finished modules land?
-            <small>Default is the sibling <code>inkHub/src/modules</code>.</small>
-          </span>
-          <input name="target_modules_dir" type="text">
-        </label>
+
+      <div id="providers-list" class="providers-list"></div>
+
+      <form id="add-provider-form" class="add-provider stack">
         <div class="row">
           <label class="half">
-            <span class="label-text">Panel width (px)</span>
-            <input name="panel_width" type="number" min="100" value="800">
+            <span class="label-text">Provider</span>
+            <select name="provider" required>
+              <option value="">— select one —</option>
+            </select>
           </label>
           <label class="half">
-            <span class="label-text">Panel height (px)</span>
-            <input name="panel_height" type="number" min="100" value="480">
+            <span class="label-text">API key <small id="add-provider-key-hint">(optional for OpenCode)</small></span>
+            <input name="api_key" type="password" autocomplete="off"
+                   placeholder="paste the key from your provider dashboard">
           </label>
         </div>
-        <button type="submit" class="primary">Save &amp; start building</button>
+        <div class="wizard-nav">
+          <button type="button" id="providers-continue" class="ghost" disabled>
+            Continue to dashboard →
+          </button>
+          <button type="submit" class="primary">+ Add provider</button>
+        </div>
       </form>
     </section>
 
-    <!-- Wizard panel — shown when configured -->
-    <section id="wizard-panel" class="card{% if not configured %} hidden{% endif %}">
+    <!-- ============================================================ -->
+    <!-- View 2: Dashboard — manage active model + providers          -->
+    <!-- ============================================================ -->
+    <section id="dashboard-panel" class="card hidden">
+      <h2>Dashboard</h2>
+      <p class="lede">Pick which model to use, manage your API providers, then start building.</p>
+
+      <div class="dashboard-grid">
+        <div class="dashboard-card">
+          <h3>Active model</h3>
+          <label>
+            <span class="label-text">Provider</span>
+            <select id="active-provider-select"></select>
+          </label>
+          <label>
+            <span class="label-text">
+              Model
+              <small id="active-model-loading" class="hidden">loading…</small>
+            </span>
+            <select id="active-model-select"></select>
+          </label>
+          <p id="active-model-warning" class="help hidden"></p>
+          <p id="active-model-status" class="help"></p>
+        </div>
+
+        <div class="dashboard-card">
+          <h3>API providers</h3>
+          <div id="dashboard-providers-list" class="providers-list"></div>
+          <form id="dashboard-add-provider-form" class="stack">
+            <label>
+              <span class="label-text">Add another provider</span>
+              <select name="provider">
+                <option value="">— select one —</option>
+              </select>
+            </label>
+            <label>
+              <span class="label-text">API key <small id="dashboard-add-key-hint">(optional for OpenCode)</small></span>
+              <input name="api_key" type="password" autocomplete="off"
+                     placeholder="paste the key from your provider dashboard">
+            </label>
+            <button type="submit" class="ghost">+ Add provider</button>
+          </form>
+        </div>
+
+        <div class="dashboard-card dashboard-card-wide">
+          <h3>Output</h3>
+          <form id="dashboard-target-form" class="stack">
+            <label>
+              <span class="label-text">
+                Where should finished modules land?
+                <small>Auto-detected from your local InkHub checkout.</small>
+              </span>
+              <input name="target_modules_dir" type="text">
+            </label>
+            <p id="dashboard-panel-info" class="help"></p>
+            <button type="submit" class="ghost">Save output settings</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="wizard-nav">
+        <div></div>
+        <button id="dashboard-start-wizard" type="button" class="primary" disabled>
+          ✨ Start building a module →
+        </button>
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- Wizard panel — questions to generate a module                -->
+    <!-- ============================================================ -->
+    <section id="wizard-panel" class="card hidden">
       <div id="wizard-steps"></div>
       <div class="wizard-nav">
         <button id="btn-back" type="button" class="ghost" disabled>← Back</button>

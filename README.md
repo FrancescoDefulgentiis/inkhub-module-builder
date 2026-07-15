@@ -12,7 +12,7 @@ and your new module is on the launcher.
 
 ## Highlights
 
-- **Bring your own AI** — pick from OpenAI (GPT), Anthropic (Claude), or Google (Gemini). You paste the API key once.
+- **Bring your own AI** — pick from OpenAI (GPT), Anthropic (Claude), Google (Gemini), or OpenCode (free).
 - **No coding required** — a guided wizard asks plain-English questions.
 - **Drop-in output** — every generated module ships with its own `config.json`, so it works the moment you drag the folder into `src/modules/`.
 - **Safety net** — before it hands you the folder, the platform imports and renders your module in a sandboxed subprocess, and iterates with the AI if anything fails.
@@ -34,10 +34,14 @@ Then open <http://localhost:5001> in your browser.
 
 On first launch you'll be asked for:
 
-1. **AI provider** (OpenAI / Anthropic / Gemini)
-2. **API key** (stored locally in `config.json`, never leaves your machine except to call the AI)
+1. **AI provider** (OpenAI / Anthropic / Gemini / OpenCode)
+2. **API key** (stored locally in `config.json`, never leaves your machine except to call the AI; not required for OpenCode)
 3. **Model** (a sensible default is preselected)
-4. **Drop-in target folder** (defaults to `../src/modules` — where InkHub picks up modules)
+4. **Drop-in target folder** (auto-detected from your local InkHub checkout; editable if needed)
+
+The builder also reads `inkHub/src/config.json` to infer panel size from
+`panel_driver`, so module generation/validation matches your InkHub display
+without asking for manual width/height.
 
 ---
 
@@ -53,7 +57,7 @@ inkhub-module-builder/
 ├── backend/
 │   ├── server.py                   # Flask app
 │   ├── settings.py                 # config.json read/write
-│   ├── llm/                        # provider abstraction (openai/anthropic/gemini)
+│   ├── llm/                        # provider abstraction (openai/anthropic/gemini/opencode)
 │   ├── wizard/                     # question schema + prompt composition
 │   ├── generator/                  # writes generated module folder
 │   └── validator/                  # sandboxed subprocess dry-run
